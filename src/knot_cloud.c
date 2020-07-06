@@ -38,7 +38,7 @@
 
 #include "mq.h"
 #include "parser.h"
-#include "cloud.h"
+#include "knot_cloud.h"
 
 #define MQ_QUEUE_FOG_OUT "thingd-fogOut"
 #define MQ_QUEUE_REPLY "thingd-reply"
@@ -67,14 +67,14 @@
 #define MQ_CMD_DEVICE_AUTH "device.auth"
 #define MQ_CMD_SCHEMA_SENT "device.schema.sent"
 
-cloud_cb_t cloud_cb;
+knot_cloud_cb_t knot_cloud_cb;
 amqp_bytes_t queue_reply;
 amqp_bytes_t queue_fog;
 char *user_auth_token;
-char *cloud_events[MSG_TYPES_LENGTH];
+char *knot_cloud_events[MSG_TYPES_LENGTH];
 amqp_table_entry_t headers[1];
 
-static void cloud_msg_destroy(struct cloud_msg *msg)
+static void knot_cloud_msg_destroy(struct knot_cloud_msg *msg)
 {
 	if (msg->type == UPDATE_MSG || msg->type == REQUEST_MSG)
 		l_queue_destroy(msg->list, l_free);
@@ -87,16 +87,17 @@ static int map_routing_key_to_msg_type(const char *routing_key)
 	int msg_type;
 
 	for (msg_type = UPDATE_MSG; msg_type < MSG_TYPES_LENGTH; msg_type++) {
-		if (!strcmp(routing_key, cloud_events[msg_type]))
+		if (!strcmp(routing_key, knot_cloud_events[msg_type]))
 			return msg_type;
 	}
 
 	return -1;
 }
 
-static struct cloud_msg *create_msg(const char *routing_key, json_object *jso)
+static struct knot_cloud_msg *create_msg(const char *routing_key,
+					 json_object *jso)
 {
-	struct cloud_msg *msg = l_new(struct cloud_msg, 1);
+	struct knot_cloud_msg *msg = l_new(struct knot_cloud_msg, 1);
 
 	msg->type = map_routing_key_to_msg_type(routing_key);
 
@@ -185,7 +186,7 @@ static struct cloud_msg *create_msg(const char *routing_key, json_object *jso)
 
 	return msg;
 err:
-	cloud_msg_destroy(msg);
+	knot_cloud_msg_destroy(msg);
 	return NULL;
 }
 
@@ -196,11 +197,11 @@ err:
  *
  * Returns true if the message envelope was consumed or returns false otherwise.
  */
-static bool on_cloud_receive_message(const char *exchange,
-				     const char *routing_key,
-				     const char *body, void *user_data)
+static bool on_amqp_receive_message(const char *exchange,
+				    const char *routing_key,
+				    const char *body, void *user_data)
 {
-	struct cloud_msg *msg;
+	struct knot_cloud_msg *msg;
 	bool consumed = true;
 	json_object *jso;
 
@@ -212,8 +213,8 @@ static bool on_cloud_receive_message(const char *exchange,
 
 	msg = create_msg(routing_key, jso);
 	if (msg) {
-		consumed = cloud_cb(msg, user_data);
-		cloud_msg_destroy(msg);
+		consumed = knot_cloud_cb(msg, user_data);
+		knot_cloud_msg_destroy(msg);
 	}
 
 	json_object_put(jso);
@@ -237,7 +238,7 @@ static int create_fog_queue(const char *id)
 
 	for (msg_type = UPDATE_MSG; msg_type < MSG_TYPES_LENGTH; msg_type++) {
 		err = mq_prepare_direct_queue(queue_fog, MQ_EXCHANGE_DEVICE,
-					      cloud_events[msg_type]);
+					      knot_cloud_events[msg_type]);
 		if (err) {
 			l_error("Error on set up queue to consume");
 			return -1;
@@ -274,7 +275,7 @@ static int create_reply_queue(const char *id)
 	return 0;
 }
 
-static void destroy_cloud_queues(void)
+static void destroy_knot_cloud_queues(void)
 {
 	if (queue_reply.bytes) {
 		if (mq_delete_queue(queue_reply))
@@ -293,19 +294,19 @@ static void destroy_cloud_queues(void)
 	}
 }
 
-static void destroy_cloud_events(void)
+static void destroy_knot_cloud_events(void)
 {
 	int msg_type;
 
 	for (msg_type = UPDATE_MSG; msg_type < MSG_TYPES_LENGTH; msg_type++) {
-		if (cloud_events[msg_type] != NULL) {
-			l_free(cloud_events[msg_type]);
-			cloud_events[msg_type] = NULL;
+		if (knot_cloud_events[msg_type] != NULL) {
+			l_free(knot_cloud_events[msg_type]);
+			knot_cloud_events[msg_type] = NULL;
 		}
 	}
 }
 
-static int set_cloud_events(const char *id)
+static int set_knot_cloud_events(const char *id)
 {
 	char binding_key_reply[100];
 	char binding_key_update[100];
@@ -320,31 +321,37 @@ static int set_cloud_events(const char *id)
 	snprintf(binding_key_request, sizeof(binding_key_request), "%s.%s.%s",
 		 MQ_EVENT_PREFIX_DEVICE, id, MQ_EVENT_POSTFIX_DATA_REQUEST);
 
-	/* Free cloud_events if already allocated */
-	destroy_cloud_events();
+	/* Free knot_cloud_events if already allocated */
+	destroy_knot_cloud_events();
 
-	cloud_events[UPDATE_MSG] = l_strdup(binding_key_update);
-	cloud_events[REQUEST_MSG] = l_strdup(binding_key_request);
-	cloud_events[REGISTER_MSG] = l_strdup(MQ_EVENT_DEVICE_REGISTERED);
-	cloud_events[UNREGISTER_MSG] = l_strdup(MQ_EVENT_DEVICE_UNREGISTERED);
-	cloud_events[AUTH_MSG] = l_strdup(binding_key_reply);
-	cloud_events[SCHEMA_MSG] = l_strdup(MQ_EVENT_DEVICE_SCHEMA_UPDATED);
+	knot_cloud_events[UPDATE_MSG] =
+				l_strdup(binding_key_update);
+	knot_cloud_events[REQUEST_MSG] =
+				l_strdup(binding_key_request);
+	knot_cloud_events[REGISTER_MSG] =
+				l_strdup(MQ_EVENT_DEVICE_REGISTERED);
+	knot_cloud_events[UNREGISTER_MSG] =
+				l_strdup(MQ_EVENT_DEVICE_UNREGISTERED);
+	knot_cloud_events[AUTH_MSG] =
+				l_strdup(binding_key_reply);
+	knot_cloud_events[SCHEMA_MSG] =
+				l_strdup(MQ_EVENT_DEVICE_SCHEMA_UPDATED);
 
 	return 0;
 }
 
 /**
- * cloud_register_device:
+ * knot_cloud_register_device:
  * @id: device id
  * @name: device name
  *
  * Requests cloud to add a device.
  * The confirmation that the cloud received the message comes from a callback
- * set in function cloud_read_start with message type REGISTER_MSG.
+ * set in function knot_cloud_read_start with message type REGISTER_MSG.
  *
  * Returns: 0 if successful and a KNoT error otherwise.
  */
-int cloud_register_device(const char *id, const char *name)
+int knot_cloud_register_device(const char *id, const char *name)
 {
 	json_object *jobj_device;
 	const char *json_str;
@@ -383,16 +390,16 @@ int cloud_register_device(const char *id, const char *name)
 }
 
 /**
- * cloud_unregister_device:
+ * knot_cloud_unregister_device:
  * @id: device id
  *
  * Requests cloud to remove a device.
  * The confirmation that the cloud received the message comes from a callback
- * set in function cloud_read_start  with message type UNREGISTER_MSG.
+ * set in function knot_cloud_read_start  with message type UNREGISTER_MSG.
  *
  * Returns: 0 if successful and a KNoT error otherwise.
  */
-int cloud_unregister_device(const char *id)
+int knot_cloud_unregister_device(const char *id)
 {
 	json_object *jobj_unreg;
 	const char *json_str;
@@ -431,17 +438,17 @@ int cloud_unregister_device(const char *id)
 }
 
 /**
- * cloud_auth_device:
+ * knot_cloud_auth_device:
  * @id: device id
  * @token: device token
  *
  * Requests cloud to auth a device.
  * The confirmation that the cloud received the message comes from a callback
- * set in function cloud_read_start.
+ * set in function knot_cloud_read_start.
  *
  * Returns: 0 if successful and a KNoT error otherwise.
  */
-int cloud_auth_device(const char *id, const char *token)
+int knot_cloud_auth_device(const char *id, const char *token)
 {
 	json_object *jobj_auth;
 	const char *json_str;
@@ -486,15 +493,15 @@ int cloud_auth_device(const char *id, const char *token)
 }
 
 /**
- * cloud_update_schema:
+ * knot_cloud_update_schema:
  *
  * Requests cloud to update the device schema.
  * The confirmation that the cloud received the message comes from a callback
- * set in function cloud_read_start with message type SCHEMA_MSG.
+ * set in function knot_cloud_read_start with message type SCHEMA_MSG.
  *
  * Returns: 0 if successful and a KNoT error otherwise.
  */
-int cloud_update_schema(const char *id, struct l_queue *schema_list)
+int knot_cloud_update_schema(const char *id, struct l_queue *schema_list)
 {
 	json_object *jobj_schema;
 	const char *json_str;
@@ -533,7 +540,7 @@ int cloud_update_schema(const char *id, struct l_queue *schema_list)
 }
 
 /**
- * cloud_publish_data:
+ * knot_cloud_publish_data:
  * @id: device id
  * @sensor_id: schema sensor id
  * @value_type: schema value type defined in KNoT protocol
@@ -544,9 +551,9 @@ int cloud_update_schema(const char *id, struct l_queue *schema_list)
  *
  * Returns: 0 if successful and a KNoT error otherwise.
  */
-int cloud_publish_data(const char *id, uint8_t sensor_id, uint8_t value_type,
-		       const knot_value_type *value,
-		       uint8_t kval_len)
+int knot_cloud_publish_data(const char *id, uint8_t sensor_id,
+			    uint8_t value_type, const knot_value_type *value,
+			    uint8_t kval_len)
 {
 	json_object *jobj_data;
 	const char *json_str;
@@ -583,7 +590,7 @@ int cloud_publish_data(const char *id, uint8_t sensor_id, uint8_t value_type,
 }
 
 /**
- * cloud_read_start:
+ * knot_cloud_read_start:
  * @id: thing id
  * @read_handler_cb: callback to handle message received from cloud
  * @user_data: user data provided to callbacks
@@ -592,15 +599,15 @@ int cloud_publish_data(const char *id, uint8_t sensor_id, uint8_t value_type,
  *
  * Returns: 0 if successful and -1 otherwise.
  */
-int cloud_read_start(const char *id, cloud_cb_t read_handler_cb,
-		     void *user_data)
+int knot_cloud_read_start(const char *id, knot_cloud_cb_t read_handler_cb,
+			  void *user_data)
 {
-	cloud_cb = read_handler_cb;
+	knot_cloud_cb = read_handler_cb;
 
 	/* Delete queues if already declared */
-	destroy_cloud_queues();
+	destroy_knot_cloud_queues();
 
-	if (set_cloud_events(id))
+	if (set_knot_cloud_events(id))
 		return -1;
 
 	if (create_fog_queue(id))
@@ -609,7 +616,7 @@ int cloud_read_start(const char *id, cloud_cb_t read_handler_cb,
 	if (create_reply_queue(id))
 		return -1;
 
-	if (mq_set_read_cb(on_cloud_receive_message, user_data)) {
+	if (mq_set_read_cb(on_amqp_receive_message, user_data)) {
 		l_error("Error on set up read callback");
 		return -1;
 	}
@@ -617,8 +624,10 @@ int cloud_read_start(const char *id, cloud_cb_t read_handler_cb,
 	return 0;
 }
 
-int cloud_start(char *url, char *user_token, cloud_connected_cb_t connected_cb,
-		cloud_disconnected_cb_t disconnected_cb, void *user_data)
+int knot_cloud_start(char *url, char *user_token,
+		     knot_cloud_connected_cb_t connected_cb,
+		     knot_cloud_disconnected_cb_t disconnected_cb,
+		     void *user_data)
 {
 	user_auth_token = l_strdup(user_token);
 	headers[0].key = amqp_cstring_bytes(MQ_AUTHORIZATION_HEADER);
@@ -628,10 +637,10 @@ int cloud_start(char *url, char *user_token, cloud_connected_cb_t connected_cb,
 	return mq_start(url, connected_cb, disconnected_cb, user_data);
 }
 
-void cloud_stop(void)
+void knot_cloud_stop(void)
 {
-	destroy_cloud_queues();
+	destroy_knot_cloud_queues();
 
-	destroy_cloud_events();
+	destroy_knot_cloud_events();
 	mq_stop();
 }
