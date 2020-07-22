@@ -19,6 +19,15 @@
  *
  */
 
+struct knot_cloud_device {
+	char *id;
+	char *uuid;
+	char *name;
+	bool online;
+	struct l_queue *schema;
+	struct l_timeout *unreg_timeout;
+};
+
 struct knot_cloud_msg {
 	const char *device_id;
 	const char *error;
@@ -29,6 +38,7 @@ struct knot_cloud_msg {
 		UNREGISTER_MSG,
 		AUTH_MSG,
 		SCHEMA_MSG,
+		LIST_MSG,
 		MSG_TYPES_LENGTH
 	} type;
 	union {
@@ -49,6 +59,7 @@ int knot_cloud_start(char *url, char *user_token,
 		     knot_cloud_disconnected_cb_t disconnected_cb,
 		     void *user_data);
 void knot_cloud_stop(void);
+int knot_cloud_list_devices(void);
 int knot_cloud_publish_data(const char *id, uint8_t sensor_id,
 			    uint8_t value_type, const knot_value_type *value,
 			    uint8_t kval_len);
