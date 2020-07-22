@@ -61,12 +61,16 @@
 #define MQ_EVENT_DEVICE_SCHEMA_UPDATED "device.schema.updated"
 
 #define MQ_EVENT_AUTH_REPLY "thingd-auth-reply"
+#define MQ_EVENT_LIST_REPLY "thingd-list-reply"
 
  /* Northbound traffic (control, measurements) */
 #define MQ_CMD_DEVICE_REGISTER "device.register"
 #define MQ_CMD_DEVICE_UNREGISTER "device.unregister"
 #define MQ_CMD_DEVICE_AUTH "device.auth"
 #define MQ_CMD_SCHEMA_SENT "device.schema.sent"
+#define MQ_CMD_DEVICE_LIST "device.list"
+
+#define MQ_DEFAULT_CORRELATION_ID "default-corrId"
 
 knot_cloud_cb_t knot_cloud_cb;
 amqp_bytes_t queue_reply;
@@ -75,10 +79,61 @@ char *user_auth_token;
 char *knot_cloud_events[MSG_TYPES_LENGTH];
 amqp_table_entry_t headers[1];
 
+static void knot_cloud_device_free(void *data)
+{
+	struct knot_cloud_device *device = data;
+
+	if (unlikely(!device))
+		return;
+
+	l_queue_destroy(device->schema, l_free);
+	l_free(device->id);
+	l_free(device->uuid);
+	l_free(device->name);
+	l_free(device);
+}
+
+static void *knot_cloud_device_array_foreach(json_object *array_item)
+{
+	json_object *jobjkey;
+	struct knot_cloud_device *device;
+	struct l_queue *schema;
+	const char *id, *name;
+
+	/* Getting 'Id': Mandatory field for registered device */
+	id = parser_get_key_str_from_json_obj(array_item, "id");
+	if (!id)
+		return NULL;
+
+	/* Getting 'schema': Mandatory field for registered device */
+	/* FIXME: Call a parser function instead of json-c function*/
+	if (!json_object_object_get_ex(array_item, "schema", &jobjkey))
+		return NULL;
+
+	schema = parser_schema_to_list(json_object_to_json_string(jobjkey));
+	if (!schema)
+		return NULL;
+
+	/* Getting 'Name' */
+	name = parser_get_key_str_from_json_obj(array_item, "name");
+	if (!name)
+		return NULL;
+
+	device = l_new(struct knot_cloud_device, 1);
+	device->id = l_strdup(id);
+	device->name = l_strdup(name);
+	device->uuid = l_strdup(id);
+	device->schema = schema;
+
+	return device;
+}
+
 static void knot_cloud_msg_destroy(struct knot_cloud_msg *msg)
 {
 	if (msg->type == UPDATE_MSG || msg->type == REQUEST_MSG)
 		l_queue_destroy(msg->list, l_free);
+	else if (msg->type == LIST_MSG)
+		l_queue_destroy(msg->list, knot_cloud_device_free);
 
 	l_free(msg);
 }
@@ -173,6 +228,17 @@ static struct knot_cloud_msg *create_msg(const char *routing_key,
 		msg->device_id = parser_get_key_str_from_json_obj(jso, "id");
 		if (!msg->device_id ||
 				!parser_is_key_str_or_null(jso, "error")) {
+			l_error("Malformed JSON message");
+			goto err;
+		}
+
+		msg->error = parser_get_key_str_from_json_obj(jso, "error");
+		break;
+	case LIST_MSG:
+		msg->device_id = NULL;
+		msg->list = parser_queue_from_json_array(jso,
+					knot_cloud_device_array_foreach);
+		if (!msg->list || !parser_is_key_str_or_null(jso, "error")) {
 			l_error("Malformed JSON message");
 			goto err;
 		}
@@ -282,11 +348,15 @@ static void destroy_knot_cloud_events(void)
 static int set_knot_cloud_events(const char *id)
 {
 	char binding_key_auth_reply[100];
+	char binding_key_list_reply[100];
 	char binding_key_update[100];
 	char binding_key_request[100];
 
 	snprintf(binding_key_auth_reply, sizeof(binding_key_auth_reply),
 		 "%s-%s", MQ_EVENT_AUTH_REPLY, id);
+
+	snprintf(binding_key_list_reply, sizeof(binding_key_list_reply),
+		 "%s-%s", MQ_EVENT_LIST_REPLY, id);
 
 	snprintf(binding_key_update, sizeof(binding_key_update), "%s.%s.%s",
 		 MQ_EVENT_PREFIX_DEVICE, id, MQ_EVENT_POSTFIX_DATA_UPDATE);
@@ -309,6 +379,8 @@ static int set_knot_cloud_events(const char *id)
 				l_strdup(binding_key_auth_reply);
 	knot_cloud_events[SCHEMA_MSG] =
 				l_strdup(MQ_EVENT_DEVICE_SCHEMA_UPDATED);
+	knot_cloud_events[LIST_MSG] =
+				l_strdup(binding_key_list_reply);
 
 	return 0;
 }
@@ -505,6 +577,51 @@ int knot_cloud_update_schema(const char *id, struct l_queue *schema_list)
 		result = KNOT_ERR_CLOUD_FAILURE;
 
 	json_object_put(jobj_schema);
+
+	return result;
+}
+
+/**
+ * knot_cloud_list_devices:
+ * 
+ * Sends a request to cloud list all devices
+ * 
+ * Returns: 0 if successful and a KNoT error otherwise.
+ */
+int knot_cloud_list_devices(void)
+{
+	json_object *jobj_empty;
+	const char *json_str;
+	int result;
+
+	jobj_empty = json_object_new_object();
+	json_str = json_object_to_json_string(jobj_empty);
+
+	headers[0].value.value.bytes = amqp_cstring_bytes(user_auth_token);
+
+	/**
+	 * Exchange
+	 *	Type: Direct
+	 *	Name: device
+	 * Routing Key
+	 *	Name: device.list
+	 * Headers
+	 *	[0]: User Token
+	 * Expiration
+	 *	2000 ms
+	 */
+	result = mq_publish_direct_message_rpc(MQ_EXCHANGE_DEVICE,
+					       MQ_CMD_DEVICE_LIST,
+					       headers, 1,
+					       MQ_MSG_EXPIRATION_TIME_MS,
+					       amqp_cstring_bytes(
+					       knot_cloud_events[LIST_MSG]),
+					       MQ_DEFAULT_CORRELATION_ID,
+					       json_str);
+	if (result < 0)
+		result = KNOT_ERR_CLOUD_FAILURE;
+
+	json_object_put(jobj_empty);
 
 	return result;
 }
