@@ -41,7 +41,6 @@
 #include "knot_cloud.h"
 
 #define MQ_QUEUE_FOG_OUT "thingd-fogOut"
-#define MQ_QUEUE_REPLY "thingd-reply"
 
 /* Exchanges */
 #define MQ_EXCHANGE_DEVICE "device"
@@ -60,6 +59,8 @@
 #define MQ_EVENT_DEVICE_REGISTERED "device.registered"
 #define MQ_EVENT_DEVICE_UNREGISTERED "device.unregistered"
 #define MQ_EVENT_DEVICE_SCHEMA_UPDATED "device.schema.updated"
+
+#define MQ_EVENT_AUTH_REPLY "thingd-auth-reply"
 
  /* Northbound traffic (control, measurements) */
 #define MQ_CMD_DEVICE_REGISTER "device.register"
@@ -221,7 +222,8 @@ static bool on_amqp_receive_message(const char *exchange,
 
 	return consumed;
 }
-static int create_fog_queue(const char *id)
+
+static int create_cloud_queue(const char *id)
 {
 	char queue_fog_name[100];
 	int msg_type;
@@ -254,37 +256,8 @@ static int create_fog_queue(const char *id)
 	return 0;
 }
 
-static int create_reply_queue(const char *id)
+static void destroy_cloud_queue(void)
 {
-	char queue_reply_name[100];
-
-	snprintf(queue_reply_name, sizeof(queue_reply_name), "%s-%s",
-		 MQ_QUEUE_REPLY, id);
-
-	queue_reply = mq_declare_new_queue(queue_reply_name);
-	if (queue_reply.bytes == NULL) {
-		l_error("Error on declare a new queue");
-		return -1;
-	}
-
-	if (mq_consumer_queue(queue_reply)) {
-		l_error("Error on start a queue consumer");
-		return -1;
-	}
-
-	return 0;
-}
-
-static void destroy_knot_cloud_queues(void)
-{
-	if (queue_reply.bytes) {
-		if (mq_delete_queue(queue_reply))
-			l_error("Error when delete Reply Queue");
-
-		amqp_bytes_free(queue_reply);
-		queue_reply = amqp_empty_bytes;
-	}
-
 	if (queue_fog.bytes) {
 		if (mq_delete_queue(queue_fog))
 			l_error("Error when delete Fog Queue");
@@ -308,12 +281,12 @@ static void destroy_knot_cloud_events(void)
 
 static int set_knot_cloud_events(const char *id)
 {
-	char binding_key_reply[100];
+	char binding_key_auth_reply[100];
 	char binding_key_update[100];
 	char binding_key_request[100];
 
-	snprintf(binding_key_reply, sizeof(binding_key_reply), "%s-%s",
-		 MQ_QUEUE_REPLY, id);
+	snprintf(binding_key_auth_reply, sizeof(binding_key_auth_reply),
+		 "%s-%s", MQ_EVENT_AUTH_REPLY, id);
 
 	snprintf(binding_key_update, sizeof(binding_key_update), "%s.%s.%s",
 		 MQ_EVENT_PREFIX_DEVICE, id, MQ_EVENT_POSTFIX_DATA_UPDATE);
@@ -333,7 +306,7 @@ static int set_knot_cloud_events(const char *id)
 	knot_cloud_events[UNREGISTER_MSG] =
 				l_strdup(MQ_EVENT_DEVICE_UNREGISTERED);
 	knot_cloud_events[AUTH_MSG] =
-				l_strdup(binding_key_reply);
+				l_strdup(binding_key_auth_reply);
 	knot_cloud_events[SCHEMA_MSG] =
 				l_strdup(MQ_EVENT_DEVICE_SCHEMA_UPDATED);
 
@@ -454,11 +427,6 @@ int knot_cloud_auth_device(const char *id, const char *token)
 	const char *json_str;
 	int result;
 
-	if (!queue_reply.bytes) {
-		l_error("Reply queue not declared");
-		return KNOT_ERR_CLOUD_FAILURE;
-	}
-
 	jobj_auth = parser_auth_json_create(id, token);
 	if (!jobj_auth)
 		return KNOT_ERR_CLOUD_FAILURE;
@@ -482,7 +450,9 @@ int knot_cloud_auth_device(const char *id, const char *token)
 					       MQ_CMD_DEVICE_AUTH,
 					       headers, 1,
 					       MQ_MSG_EXPIRATION_TIME_MS,
-					       queue_reply, id,
+					       amqp_cstring_bytes(
+					       knot_cloud_events[AUTH_MSG]),
+					       id,
 					       json_str);
 	if (result < 0)
 		result = KNOT_ERR_CLOUD_FAILURE;
@@ -605,15 +575,12 @@ int knot_cloud_read_start(const char *id, knot_cloud_cb_t read_handler_cb,
 	knot_cloud_cb = read_handler_cb;
 
 	/* Delete queues if already declared */
-	destroy_knot_cloud_queues();
+	destroy_cloud_queue();
 
 	if (set_knot_cloud_events(id))
 		return -1;
 
-	if (create_fog_queue(id))
-		return -1;
-
-	if (create_reply_queue(id))
+	if (create_cloud_queue(id))
 		return -1;
 
 	if (mq_set_read_cb(on_amqp_receive_message, user_data)) {
@@ -639,7 +606,7 @@ int knot_cloud_start(char *url, char *user_token,
 
 void knot_cloud_stop(void)
 {
-	destroy_knot_cloud_queues();
+	destroy_cloud_queue();
 
 	destroy_knot_cloud_events();
 	mq_stop();
