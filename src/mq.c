@@ -191,7 +191,8 @@ static void on_disconnect(struct l_io *io, void *user_data)
 {
 	l_debug("AMQP broker disconnected");
 
-	mq_ctx.disconnected_cb(mq_ctx.connection_data);
+	if (mq_ctx.disconnected_cb)
+		mq_ctx.disconnected_cb(mq_ctx.connection_data);
 
 	if (mq_ctx.conn_retry_timeout)
 		l_timeout_modify_ms(mq_ctx.conn_retry_timeout,
@@ -274,7 +275,9 @@ static void attempt_connection(struct l_timeout *ltimeout, void *user_data)
 		goto io_destroy;
 	}
 
-	mq_ctx.connected_cb(mq_ctx.connection_data);
+	if (mq_ctx.connected_cb)
+		mq_ctx.connected_cb(mq_ctx.connection_data);
+
 	goto done;
 
 io_destroy:
