@@ -524,7 +524,7 @@ int knot_cloud_auth_device(const char *id, const char *token)
 					       MQ_MSG_EXPIRATION_TIME_MS,
 					       amqp_cstring_bytes(
 					       knot_cloud_events[AUTH_MSG]),
-					       id,
+					       MQ_DEFAULT_CORRELATION_ID,
 					       json_str);
 	if (result < 0)
 		result = KNOT_ERR_CLOUD_FAILURE;
