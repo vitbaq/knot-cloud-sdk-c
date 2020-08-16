@@ -24,6 +24,7 @@ json_object *parser_data_create_object(const char *device_id, uint8_t sensor_id,
 				const knot_value_type *value,
 				uint8_t kval_len);
 struct l_queue *parser_schema_to_list(const char *json_str);
+struct l_queue *parser_config_to_list(json_object *jso);
 struct l_queue *parser_queue_from_json_array(json_object *jobj,
 				parser_json_array_item_cb foreach_cb);
 struct l_queue *parser_request_to_list(json_object *jso);

@@ -59,6 +59,7 @@
 #define MQ_EVENT_DEVICE_REGISTERED "device.registered"
 #define MQ_EVENT_DEVICE_UNREGISTERED "device.unregistered"
 #define MQ_EVENT_DEVICE_SCHEMA_UPDATED "device.schema.updated"
+#define MQ_EVENT_DEVICE_CONFIG_UPDATED "device.config.updated"
 
 #define MQ_EVENT_AUTH_REPLY "thingd-auth-reply"
 #define MQ_EVENT_LIST_REPLY "thingd-list-reply"
@@ -234,6 +235,22 @@ static struct knot_cloud_msg *create_msg(const char *routing_key,
 
 		msg->error = parser_get_key_str_from_json_obj(jso, "error");
 		break;
+	case CONFIG_MSG:
+		msg->device_id = parser_get_key_str_from_json_obj(jso, "id");
+		if (!msg->device_id ||
+				!parser_is_key_str_or_null(jso, "error")) {
+			l_error("Malformed JSON message");
+			goto err;
+		}
+
+		msg->list = parser_config_to_list(jso);
+		if (!msg->list) {
+			l_error("Malformed JSON message");
+			goto err;
+		}
+
+		msg->error = parser_get_key_str_from_json_obj(jso, "error");
+		break;
 	case LIST_MSG:
 		msg->device_id = NULL;
 		msg->list = parser_queue_from_json_array(jso,
@@ -368,6 +385,8 @@ static int set_knot_cloud_events(const char *id)
 				l_strdup(binding_key_auth_reply);
 	knot_cloud_events[SCHEMA_MSG] =
 				l_strdup(MQ_EVENT_DEVICE_SCHEMA_UPDATED);
+	knot_cloud_events[CONFIG_MSG] =
+				l_strdup(MQ_EVENT_DEVICE_CONFIG_UPDATED);
 	knot_cloud_events[LIST_MSG] =
 				l_strdup(binding_key_list_reply);
 

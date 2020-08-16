@@ -473,6 +473,121 @@ done:
 	return list;
 }
 
+struct l_queue *parser_config_to_list(json_object *jso)
+{
+	json_object *jobjarray, *jobjentry, *jobjkey;
+	const char *json_str;
+	struct l_queue *list;
+	knot_msg_config *entry;
+	knot_value_type lower_threshold, upper_threshold;
+	int sensor_id, time_sec;
+	uint8_t evt_flag;
+	bool change;
+	uint64_t i;
+
+	if (!json_object_object_get_ex(jso, "config", &jobjkey))
+		return NULL;
+
+	json_str = json_object_to_json_string(jobjkey);
+
+	jobjarray = json_tokener_parse(json_str);
+	if (!jobjarray)
+		return NULL;
+
+	if (json_object_get_type(jobjarray) != json_type_array) {
+		json_object_put(jobjarray);
+		return NULL;
+	}
+
+	evt_flag &= KNOT_EVT_FLAG_NONE;
+	list = l_queue_new();
+	/* Expected JSON object is in the following format:
+	 *
+	 * [{"sensorId": 1, "change": true, "timeSec": 10,
+	 *    "lowerThreshold": 1000, "upperThreshold": 3000}]
+	 */
+
+	for (i = 0; i < json_object_array_length(jobjarray); i++) {
+
+		jobjentry = json_object_array_get_idx(jobjarray, i);
+
+		/* Getting 'sensorId' */
+		if (!json_object_object_get_ex(jobjentry, "sensorId",
+								&jobjkey))
+			goto done;
+
+		if (json_object_get_type(jobjkey) != json_type_int)
+			goto done;
+
+		sensor_id = json_object_get_int(jobjkey);
+
+		/* Getting 'change' */
+		if (!json_object_object_get_ex(jobjentry, "change",
+								&jobjkey))
+			goto done;
+
+		if (json_object_get_type(jobjkey) != json_type_boolean)
+			goto done;
+
+		change = json_object_get_boolean(jobjkey);
+
+		if (change == true)
+			evt_flag |= KNOT_EVT_FLAG_CHANGE;
+
+		/* Getting 'timeSec' */
+		if (json_object_object_get_ex(jobjentry, "timeSec", &jobjkey)) {
+
+			if (json_object_get_type(jobjkey) != json_type_int)
+				goto done;
+
+			time_sec = json_object_get_int(jobjkey);
+
+			evt_flag |= KNOT_EVT_FLAG_TIME;
+		}
+
+		/* Getting 'lowerThreshold' */
+		if (json_object_object_get_ex(jobjentry, "lowerThreshold",
+					       &jobjkey)) {
+			if (!parse_json2data(jobjkey, &lower_threshold))
+				goto done;
+
+			evt_flag |= KNOT_EVT_FLAG_LOWER_THRESHOLD;
+		}
+
+		/* Getting 'upperThreshold' */
+		if (json_object_object_get_ex(jobjentry, "upperThreshold",
+					       &jobjkey)) {
+			if (!parse_json2data(jobjkey, &upper_threshold))
+				goto done;
+
+			evt_flag |= KNOT_EVT_FLAG_UPPER_THRESHOLD;
+		}
+
+		/*
+		 * Validation not required: validation has been performed
+		 * previously when schema has been submitted to the cloud.
+		 */
+		entry = l_new(knot_msg_config, 1);
+		entry->sensor_id = sensor_id;
+		entry->values.time_sec = time_sec;
+		entry->values.lower_limit = lower_threshold;
+		entry->values.upper_limit = upper_threshold;
+		entry->values.event_flags = evt_flag;
+
+		l_queue_push_tail(list, entry);
+	}
+
+done:
+	json_object_put(jobjarray);
+
+	if (l_queue_isempty(list)) {
+		l_queue_destroy(list, NULL);
+		list = NULL;
+	}
+
+	return list;
+}
+
 struct l_queue *parser_queue_from_json_array(json_object *jobj,
 					parser_json_array_item_cb foreach_cb)
 {

@@ -38,12 +38,13 @@ struct knot_cloud_msg {
 		UNREGISTER_MSG,
 		AUTH_MSG,
 		SCHEMA_MSG,
+		CONFIG_MSG,
 		LIST_MSG,
 		MSG_TYPES_LENGTH
 	} type;
 	union {
 		const char *token; // used when type is REGISTER
-		struct l_queue *list; // used when type is UPDATE/REQUEST/LIST
+		struct l_queue *list; // used when type is UPDATE/REQUEST/LIST/CONFIG
 	};
 };
 
