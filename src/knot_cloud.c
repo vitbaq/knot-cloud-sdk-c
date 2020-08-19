@@ -69,6 +69,7 @@
 #define MQ_CMD_DEVICE_UNREGISTER "device.unregister"
 #define MQ_CMD_DEVICE_AUTH "device.auth"
 #define MQ_CMD_SCHEMA_SENT "device.schema.sent"
+#define MQ_CMD_CONFIG_SENT "device.config.sent"
 #define MQ_CMD_DEVICE_LIST "device.list"
 
 #define MQ_DEFAULT_CORRELATION_ID "default-corrId"
@@ -596,6 +597,53 @@ int knot_cloud_update_schema(const char *id, struct l_queue *schema_list)
 		result = KNOT_ERR_CLOUD_FAILURE;
 
 	json_object_put(jobj_schema);
+
+	return result;
+}
+
+/**
+ * knot_cloud_update_config:
+ *
+ * Requests cloud to update the device config.
+ * The confirmation that the cloud received the message comes from a callback
+ * set in function knot_cloud_read_start with message type CONFIG_MSG.
+ *
+ * Returns: 0 if successful and a KNoT error otherwise.
+ */
+int knot_cloud_update_config(const char *id, struct l_queue *config_list)
+{
+	json_object *jobj_config;
+	const char *json_str;
+	int result;
+
+	jobj_config = parser_config_create_object(id, config_list);
+	if (!jobj_config)
+		return KNOT_ERR_CLOUD_FAILURE;
+
+	json_str = json_object_to_json_string(jobj_config);
+
+	headers[0].value.value.bytes = amqp_cstring_bytes(user_auth_token);
+
+	/**
+	 * Exchange
+	 *	Type: Direct
+	 *	Name: device
+	 * Routing Key
+	 *	Name: device.config.sent
+	 * Headers
+	 *	[0]: User Token
+	 * Expiration
+	 *	2000 ms
+	 */
+	result = mq_publish_direct_message(MQ_EXCHANGE_DEVICE,
+					   MQ_CMD_CONFIG_SENT,
+					   headers, 1,
+					   MQ_MSG_EXPIRATION_TIME_MS,
+					   json_str);
+	if (result < 0)
+		result = KNOT_ERR_CLOUD_FAILURE;
+
+	json_object_put(jobj_config);
 
 	return result;
 }

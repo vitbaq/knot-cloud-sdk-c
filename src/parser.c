@@ -189,6 +189,81 @@ static void schema_item_create_and_append(void *data, void *user_data)
 	json_object_array_add(schema_list, item);
 }
 
+static json_object *parse_data2json(uint8_t value_type, knot_value_type *data)
+{
+	switch (value_type)
+	{
+	case KNOT_VALUE_TYPE_INT:
+		return json_object_new_int(data->val_i);
+	case KNOT_VALUE_TYPE_FLOAT:
+		return json_object_new_double(data->val_f);
+	case KNOT_VALUE_TYPE_BOOL:
+		return json_object_new_boolean(data->val_b);
+	case KNOT_VALUE_TYPE_RAW:
+		/* Without support */
+		break;
+	case KNOT_VALUE_TYPE_INT64:
+		return json_object_new_int64(data->val_i64);
+	case KNOT_VALUE_TYPE_UINT:
+		return json_object_new_uint64(data->val_u64);
+	case KNOT_VALUE_TYPE_UINT64:
+		return json_object_new_uint64(data->val_u64);
+	default:
+		break;
+	}
+}
+
+static json_object *config_item_create_obj(knot_msg_config *config)
+{
+	json_object *json_config;
+
+	json_config = json_object_new_object();
+
+	json_object_object_add(json_config, "sensorId",
+			       json_object_new_int(config->sensor_id));
+
+	if (config->values.event_flags & KNOT_EVT_FLAG_CHANGE)
+		json_object_object_add(json_config, "change",
+				       json_object_new_boolean(true));
+
+	json_object_object_add(json_config, "timeSec",
+			       json_object_new_int(config->values.time_sec));
+
+	// if (config->values.event_flags & KNOT_EVT_FLAG_LOWER_THRESHOLD)
+	// 	json_object_object_add(json_config, "lowerThreshold",
+	// 			parse_data2json(config->values.value_type,
+	// 					config->values.lower_limit));
+
+	// if (config->values.event_flags & KNOT_EVT_FLAG_UPPER_THRESHOLD)
+	// 	json_object_object_add(json_config, "upperThreshold",
+	// 			parse_data2json(config->values.value_type,
+	// 					config->values.upper_limit));
+
+	/*
+	 * Returned JSON object is in the following format:
+	 *
+	 * {
+	 *   "sensorId": 1,
+	 *   "change": true,
+	 *   "timeSec": 10,
+	 *   "lowerThreshold": 1000,
+	 *   "upperThreshold": 3000
+	 * }
+	 */
+
+	return json_config;
+}
+
+static void config_item_create_and_append(void *data, void *user_data)
+{
+	knot_msg_config *config = data;
+	json_object *config_list = user_data;
+	json_object *item;
+
+	item = config_item_create_obj(config);
+	json_object_array_add(config_list, item);
+}
+
 json_object *parser_schema_create_object(const char *device_id,
 					 struct l_queue *schema_list)
 {
@@ -218,6 +293,41 @@ json_object *parser_schema_create_object(const char *device_id,
 	 *         "name": "Door lock"
 	 *   }]
 	 * }
+	 */
+
+	return json_msg;
+}
+
+json_object *parser_config_create_object(const char *device_id,
+					 struct l_queue *config_list)
+{
+	json_object *json_msg;
+	json_object *json_config_array;
+
+	json_msg = json_object_new_object();
+	json_config_array = json_object_new_array();
+
+	json_object_object_add(json_msg, "id",
+			       json_object_new_string(device_id));
+
+	l_queue_foreach(config_list, config_item_create_and_append,
+			json_config_array);
+
+	json_object_object_add(json_msg, "config", json_config_array);
+
+	/*
+	 * Returned JSON object is in the following format:
+	 *
+	 * { "id": "fbe64efa6c7f717e",
+	 *   "config": [{
+	 *         "sensorId": 1,
+	 *         "change": true,
+	 *         "timeSec": 10,
+	 *         "lowerThreshold": 1000,
+	 *         "upperThreshold": 3000
+	 *   }]
+	 * }
+	 *
 	 */
 
 	return json_msg;

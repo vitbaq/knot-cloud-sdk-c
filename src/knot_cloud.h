@@ -57,6 +57,7 @@ int knot_cloud_register_device(const char *id, const char *name);
 int knot_cloud_unregister_device(const char *id);
 int knot_cloud_auth_device(const char *id, const char *token);
 int knot_cloud_update_schema(const char *id, struct l_queue *schema_list);
+int knot_cloud_update_config(const char *id, struct l_queue *config_list);
 int knot_cloud_list_devices(void);
 int knot_cloud_publish_data(const char *id, uint8_t sensor_id,
 			    uint8_t value_type, const knot_value_type *value,
@@ -68,4 +69,3 @@ int knot_cloud_start(char *url, char *user_token,
 		     knot_cloud_disconnected_cb_t disconnected_cb,
 		     void *user_data);
 void knot_cloud_stop(void);
-

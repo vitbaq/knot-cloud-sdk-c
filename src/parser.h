@@ -18,6 +18,8 @@ typedef void *(*parser_json_array_item_cb) (json_object *array_item);
 
 json_object *parser_schema_create_object(const char *device_id,
 					 struct l_queue *schema_list);
+json_object *parser_config_create_object(const char *device_id,
+					 struct l_queue *config_list);
 struct l_queue *parser_update_to_list(json_object *jso);
 json_object *parser_data_create_object(const char *device_id, uint8_t sensor_id,
 				uint8_t value_type,
