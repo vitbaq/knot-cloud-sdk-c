@@ -116,7 +116,7 @@ static void *device_array_item(json_object *array_item,
 		create_device_item_cb cb)
 {
 	json_object *jobjkey;
-	struct l_queue *schema;
+	struct l_queue *config_list;
 	const char *id, *name;
 
 	/* Getting 'Id': Mandatory field for registered device */
@@ -125,14 +125,15 @@ static void *device_array_item(json_object *array_item,
 	if (!id)
 		return NULL;
 
-	/* Getting 'schema': Mandatory field for registered device */
+	/* Getting 'config': Mandatory field for registered device */
 	/* FIXME: Call a parser function instead of json-c function*/
 	if (!json_object_object_get_ex(array_item,
-			KNOT_JSON_FIELD_SCHEMA, &jobjkey))
+			"config", &jobjkey))
 		return NULL;
 
-	schema = parser_schema_to_list(json_object_to_json_string(jobjkey));
-	if (!schema)
+	config_list = parser_config_to_list(
+					json_object_to_json_string(jobjkey));
+	if (!config_list)
 		return NULL;
 
 	/* Getting 'Name' */
@@ -141,7 +142,7 @@ static void *device_array_item(json_object *array_item,
 	if (!name)
 		return NULL;
 
-	return cb(id, name, schema);
+	return cb(id, name, config_list);
 }
 
 /*
@@ -192,83 +193,326 @@ static int parse_json2data(json_object *jobj, knot_value_type *kvalue)
 	return olen;
 }
 
-static json_object *schema_item_create_obj(knot_msg_schema *schema)
+static json_object *parse_data2json(uint8_t value_type, knot_value_type *data)
+{
+	switch (value_type)
+	{
+	case KNOT_VALUE_TYPE_INT:
+		return json_object_new_int(data->val_i);
+	case KNOT_VALUE_TYPE_FLOAT:
+		return json_object_new_double(data->val_f);
+	case KNOT_VALUE_TYPE_BOOL:
+		return json_object_new_boolean(data->val_b);
+	case KNOT_VALUE_TYPE_RAW:
+		/* Without support */
+		break;
+	case KNOT_VALUE_TYPE_INT64:
+		return json_object_new_int64(data->val_i64);
+	case KNOT_VALUE_TYPE_UINT:
+		return json_object_new_uint64(data->val_u64);
+	case KNOT_VALUE_TYPE_UINT64:
+		return json_object_new_uint64(data->val_u64);
+	default:
+		break;
+	}
+}
+
+static json_object *event_item_create_obj(knot_msg_config *config)
+{
+	json_object *json_event;
+
+	json_event = json_object_new_object();
+
+	json_object_object_add(json_event, KNOT_JSON_FIELD_SENSOR_ID,
+			       json_object_new_int(config->sensor_id));
+
+	if (config->event.event_flags & KNOT_EVT_FLAG_CHANGE)
+		json_object_object_add(json_event, KNOT_JSON_FIELD_CHANGE,
+				       json_object_new_boolean(true));
+
+	json_object_object_add(json_event, KNOT_JSON_FIELD_TIME_SEC,
+			       json_object_new_int(config->event.time_sec));
+
+	if (config->event.event_flags & KNOT_EVT_FLAG_LOWER_THRESHOLD)
+		json_object_object_add(json_event,
+				KNOT_JSON_FIELD_LOWER_THRESHOLD,
+				parse_data2json(config->schema.value_type,
+						&config->event.lower_limit));
+
+	if (config->event.event_flags & KNOT_EVT_FLAG_UPPER_THRESHOLD)
+		json_object_object_add(json_event,
+				KNOT_JSON_FIELD_UPPER_THRESHOLD,
+				parse_data2json(config->schema.value_type,
+						&config->event.upper_limit));
+
+	/*
+	 * Returned JSON object is in the following format:
+	 *
+	 * {
+	 *   "change": true,
+	 *   "timeSec": 10,
+	 *   "lowerThreshold": 1000,
+	 *   "upperThreshold": 3000
+	 * }
+	 *
+	 */
+
+	return json_event;
+}
+
+static json_object *schema_item_create_obj(knot_msg_config *config)
 {
 	json_object *json_schema;
 
 	json_schema = json_object_new_object();
 
 	json_object_object_add(json_schema, KNOT_JSON_FIELD_SENSOR_ID,
-				       json_object_new_int(schema->sensor_id));
+				       json_object_new_int(config->sensor_id));
 	json_object_object_add(json_schema, KNOT_JSON_FIELD_VALUE_TYPE,
 				json_object_new_int(
-					schema->values.value_type));
+					config->schema.value_type));
 	json_object_object_add(json_schema, KNOT_JSON_FIELD_UNIT,
 				json_object_new_int(
-					schema->values.unit));
+					config->schema.unit));
 	json_object_object_add(json_schema, KNOT_JSON_FIELD_TYPE_ID,
 				json_object_new_int(
-					schema->values.type_id));
+					config->schema.type_id));
 	json_object_object_add(json_schema, KNOT_JSON_FIELD_DEVICE_NAME,
 				json_object_new_string(
-					schema->values.name));
+					config->schema.name));
 
 	/*
 	 * Returned JSON object is in the following format:
 	 *
 	 * {
-	 *   "sensorId": 1,
-	 *   "valueType": 0xFFF1,
+	 *   "typeId": 0xFFF1,
 	 *   "unit": 0,
-	 *   "typeId": 3,
+	 *   "valueType": 3,
 	 *   "name": "Door lock"
 	 * }
+	 *
 	 */
 
 	return json_schema;
 }
 
-static void schema_item_create_and_append(void *data, void *user_data)
+static json_object *id_item_create_obj(knot_msg_config *config)
 {
-	knot_msg_schema *schema = data;
-	json_object *schema_list = user_data;
-	json_object *item;
+	json_object *json_id;
 
-	item = schema_item_create_obj(schema);
-	json_object_array_add(schema_list, item);
-}
+	json_id = json_object_new_object();
 
-char *parser_schema_create_object(const char *device_id,
-		struct l_queue *schema_list)
-{
-	char *json_str;
-	json_object *json_msg;
-	json_object *json_schema_array;
-
-	json_msg = json_object_new_object();
-	json_schema_array = json_object_new_array();
-
-	json_object_object_add(json_msg, KNOT_JSON_FIELD_DEVICE_ID,
-			       json_object_new_string(device_id));
-
-	l_queue_foreach(schema_list, schema_item_create_and_append,
-			json_schema_array);
-
-	json_object_object_add(json_msg, KNOT_JSON_FIELD_SCHEMA,
-			json_schema_array);
+	json_object_object_add(json_id, KNOT_JSON_FIELD_SENSOR_ID,
+			       json_object_new_int(config->sensor_id));
 
 	/*
 	 * Returned JSON object is in the following format:
 	 *
-	 * { "id": "fbe64efa6c7f717e",
-	 *   "schema" : [{
-	 *         "sensorId": 1,
-	 *         "valueType": 0xFFF1,
-	 *         "unit": 0,
-	 *         "typeId": 3,
-	 *         "name": "Door lock"
-	 *   }]
+	 * {
+	 *   "sensorId": 1
 	 * }
+	 *
+	 */
+	return json_id;
+}
+
+static void config_item_create_and_append(void *data, void *user_data)
+{
+	knot_msg_config *config = data;
+	json_object *config_list = user_data;
+	json_object *id, *schema, *event;
+
+	id = id_item_create_obj(config);
+	json_object_array_add(config_list, id);
+
+	schema = schema_item_create_obj(config);
+	json_object_array_add(config_list, schema);
+
+	event = event_item_create_obj(config);
+	json_object_array_add(config_list, event);
+}
+
+static int get_event(knot_event *event, json_object *data)
+{
+	json_object *jobjkey, *jobj_event;
+	knot_value_type lower_threshold, upper_threshold;
+	int sensor_id, time_sec;
+	uint8_t evt_flag;
+	bool change;
+
+	if (!json_object_object_get_ex(data, KNOT_JSON_FIELD_EVENT,
+				       &jobj_event))
+		return -1;
+
+	evt_flag &= KNOT_EVT_FLAG_NONE;
+
+	/* Getting 'change' */
+	if (!json_object_object_get_ex(jobj_event, KNOT_JSON_FIELD_CHANGE,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_boolean)
+		return -1;
+
+	change = json_object_get_boolean(jobjkey);
+
+	if (change == true)
+		evt_flag |= KNOT_EVT_FLAG_CHANGE;
+
+	/* Getting 'timeSec' */
+	if (json_object_object_get_ex(jobj_event, KNOT_JSON_FIELD_TIME_SEC,
+				      &jobjkey)) {
+
+		if (json_object_get_type(jobjkey) != json_type_int)
+			return -1;
+
+		time_sec = json_object_get_int(jobjkey);
+
+		evt_flag |= KNOT_EVT_FLAG_TIME;
+	}
+
+	/* Getting 'lowerThreshold' */
+	if (json_object_object_get_ex(jobj_event,
+				      KNOT_JSON_FIELD_LOWER_THRESHOLD,
+				      &jobjkey)) {
+		if (!parse_json2data(jobjkey, &lower_threshold))
+			return -1;
+
+		evt_flag |= KNOT_EVT_FLAG_LOWER_THRESHOLD;
+	}
+
+	/* Getting 'upperThreshold' */
+	if (json_object_object_get_ex(jobj_event,
+				      KNOT_JSON_FIELD_UPPER_THRESHOLD,
+				      &jobjkey)) {
+		if (!parse_json2data(jobjkey, &upper_threshold))
+			return -1;
+
+		evt_flag |= KNOT_EVT_FLAG_UPPER_THRESHOLD;
+	}
+
+	event->time_sec = time_sec;
+	event->lower_limit = lower_threshold;
+	event->upper_limit = upper_threshold;
+	event->event_flags = evt_flag;
+
+	return 0;
+}
+
+static int get_schema(knot_schema *schema, json_object *data)
+{
+	json_object *jobjkey, *jobj_schema;
+	int sensor_id, value_type, unit, type_id;
+	const char *name;
+
+	if (!json_object_object_get_ex(data, KNOT_JSON_FIELD_SCHEMA,
+				       &jobj_schema))
+		return -1;
+
+	/* Getting 'valueType' */
+	if (!json_object_object_get_ex(jobj_schema, KNOT_JSON_FIELD_VALUE_TYPE,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_int)
+		return -1;
+
+	value_type = json_object_get_int(jobjkey);
+
+	/* Getting 'unit' */
+	if (!json_object_object_get_ex(jobj_schema, KNOT_JSON_FIELD_UNIT,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_int)
+		return -1;
+
+	unit = json_object_get_int(jobjkey);
+
+	/* Getting 'typeId' */
+	if (!json_object_object_get_ex(jobj_schema, KNOT_JSON_FIELD_TYPE_ID,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_int)
+		return -1;
+
+	type_id = json_object_get_int(jobjkey);
+
+	/* Getting 'name' */
+	if (!json_object_object_get_ex(jobj_schema, KNOT_JSON_FIELD_DEVICE_NAME,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_string)
+		return -1;
+
+	name = json_object_get_string(jobjkey);
+
+	schema->value_type = value_type;
+	schema->unit = unit;
+	schema->type_id = type_id;
+	strncpy(schema->name, name, sizeof(schema->name) - 1);
+
+	return 0;
+}
+
+static int get_sensor_id(uint8_t *sensor_id, json_object *data)
+{
+	json_object *jobjkey;
+
+	if (!json_object_object_get_ex(data, KNOT_JSON_FIELD_SENSOR_ID,
+				       &jobjkey))
+		return -1;
+
+	if (json_object_get_type(jobjkey) != json_type_int)
+		return -1;
+
+	*sensor_id = json_object_get_int(jobjkey);
+
+	return 0;
+}
+
+char *parser_config_create_object(const char *device_id,
+					 struct l_queue *config_list)
+{
+	char *json_str;
+	json_object *json_msg;
+	json_object *json_array;
+
+	json_msg = json_object_new_object();
+
+	json_object_object_add(json_msg, KNOT_JSON_FIELD_DEVICE_ID,
+			       json_object_new_string(device_id));
+
+	json_array = json_object_new_array();
+	l_queue_foreach(config_list, config_item_create_and_append,
+			json_array);
+
+	json_object_object_add(json_msg, KNOT_JSON_FIELD_CONFIG, json_array);
+
+	/*
+	 * Returned JSON object is in the following format:
+	 *
+	 * {
+	 *   "id": "fbe64efa6c7f717e",
+	 *   "config" : [{
+	 *         "sensorId": 1,
+	 *         "schema": {
+	 *               "typeId": 0xFFF1,
+	 *               "unit": 0,
+	 *               "valueType": 3,
+	 *               "name": "Door lock"
+	 *         },
+	 *         "event": {
+	 *               "change": true,
+	 *               "timeSec": 10,
+	 *               "lowerThreshold": 1000,
+	 *               "upperThreshold": 3000
+	 *         }
+	 *   }],
+	 * }
+	 *
 	 */
 	json_str = l_strdup(json_object_to_json_string(json_msg));
 	json_object_put(json_msg);
@@ -453,14 +697,14 @@ char *parser_data_create_object(const char *device_id, uint8_t sensor_id,
 	return (json_str && !has_err) ? json_str : NULL;
 }
 
-struct l_queue *parser_schema_to_list(const char *json_str)
+struct l_queue *parser_config_to_list(const char *json_str)
 {
-	json_object *jobjarray, *jobjentry, *jobjkey;
+	json_object *jobjarray, *jobjentry;
 	struct l_queue *list;
-	knot_msg_schema *entry;
-	int sensor_id, value_type, unit, type_id;
+	knot_msg_config *config;
 	uint64_t i;
 	const char *name;
+	bool err;
 
 	jobjarray = json_tokener_parse(json_str);
 	if (!jobjarray)
@@ -472,88 +716,43 @@ struct l_queue *parser_schema_to_list(const char *json_str)
 	}
 
 	list = l_queue_new();
-	/* Expected JSON object is in the following format:
-	 *
-	 * [ {"sensorId": x, "valueType": w,
-	 *		"unit": z "typeId": y, "name": "foo"}]
-	 * }
-	 */
+	err = false;
 
 	for (i = 0; i < json_object_array_length(jobjarray); i++) {
+		config = l_new(knot_msg_config, 1);
+
 		jobjentry = json_object_array_get_idx(jobjarray, i);
-
-		/* Getting 'sensorId' */
-		if (!json_object_object_get_ex(jobjentry,
-						KNOT_JSON_FIELD_SENSOR_ID,
-						&jobjkey))
+		if (!jobjentry) {
+			err = true;
 			break;
+		}
 
-		if (json_object_get_type(jobjkey) != json_type_int)
+		if (get_sensor_id(&config->sensor_id, jobjentry) < 0) {
+			err = true;
 			break;
+		}
 
-		sensor_id = json_object_get_int(jobjkey);
-
-		/* Getting 'valueType' */
-		if (!json_object_object_get_ex(jobjentry,
-						KNOT_JSON_FIELD_VALUE_TYPE,
-						&jobjkey))
+		if (get_schema(&config->schema, jobjentry) < 0) {
+			err = true;
 			break;
+		}
 
-		if (json_object_get_type(jobjkey) != json_type_int)
+		if (get_event(&config->event, jobjentry) < 0) {
+			config->event.event_flags &= KNOT_EVT_FLAG_NONE;
+			config->event.event_flags |= KNOT_EVT_FLAG_UNREGISTERED;
+		}
+
+		if (!l_queue_push_tail(list, config)) {
+			err = true;
 			break;
-
-		value_type = json_object_get_int(jobjkey);
-
-		/* Getting 'unit' */
-		if (!json_object_object_get_ex(jobjentry, KNOT_JSON_FIELD_UNIT,
-						&jobjkey))
-			break;
-
-		if (json_object_get_type(jobjkey) != json_type_int)
-			break;
-
-		unit = json_object_get_int(jobjkey);
-
-		/* Getting 'typeId' */
-		if (!json_object_object_get_ex(jobjentry,
-						KNOT_JSON_FIELD_TYPE_ID,
-						&jobjkey))
-			break;
-
-		if (json_object_get_type(jobjkey) != json_type_int)
-			break;
-
-		type_id = json_object_get_int(jobjkey);
-
-		/* Getting 'name' */
-		if (!json_object_object_get_ex(jobjentry, 
-						KNOT_JSON_FIELD_DEVICE_NAME,
-						&jobjkey))
-			break;
-
-		if (json_object_get_type(jobjkey) != json_type_string)
-			break;
-
-		name = json_object_get_string(jobjkey);
-		/*
-		 * Validation not required: validation has been performed
-		 * previously when schema has been submitted to the cloud.
-		 */
-		entry = l_new(knot_msg_schema, 1);
-		entry->sensor_id = sensor_id;
-		entry->values.value_type = value_type;
-		entry->values.unit = unit;
-		entry->values.type_id = type_id;
-		strncpy(entry->values.name, name,
-						sizeof(entry->values.name) - 1);
-
-		l_queue_push_tail(list, entry);
+		}
 	}
-	json_object_put(jobjarray);
 
-	if (l_queue_isempty(list)) {
-		l_queue_destroy(list, NULL);
-		list = NULL;
+	if (err) {
+		l_free(config);
+		l_queue_destroy(list, l_free);
+		json_object_put(jobjarray);
+		return NULL;
 	}
 
 	return list;
